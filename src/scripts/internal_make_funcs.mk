@@ -8,6 +8,15 @@ $(eval \
 endef
 
 define Post_Distro
+    @rm -rf $(FINAL_DIR)/include/{LITE*,mbed*}
+    @rm -rf $(FINAL_DIR)/lib/libiot_{utils,log}.a
+
+    @if [ "$(filter -D_PLATFORM_IS_WINDOWS_,$(CFLAGS))" != "" ]; then \
+        cd $(FINAL_DIR)/bin; \
+        for i in $$(ls); do mv $${i} $${i}.exe; done; \
+        cd $${OLDPWD}; \
+    fi
+
     @find $(FINAL_DIR) -name "*.[ch]" -exec chmod a-x {} \;
     @mkdir -p $(FINAL_DIR)/src
     $(if $(filter y,$(FEATURE_MQTT_ID2_AUTH)),
@@ -46,9 +55,13 @@ define Post_Distro
         } \
         print "+-- "$$NF}' FS='/' | sed 's!\(.*\)!    &!g'
     @echo ""
-    @echo "o BINARY FOOTPRINT CONSIST:"
-    @echo "----"
-    @STAGED=$(LIBOBJ_TMPDIR) STRIP=$(strip $(STRIP)) $(SCRIPT_DIR)/stats_static_lib.sh $(FINAL_DIR)/lib/$(COMP_LIB)
+
+    @if [ "$(CONFIG_LIB_EXPORT)" = "static" ]; then \
+        echo "o BINARY FOOTPRINT CONSIST:"; \
+        echo "----"; \
+        STAGED=$(LIBOBJ_TMPDIR) STRIP=$(strip $(STRIP)) $(SCRIPT_DIR)/stats_static_lib.sh $(FINAL_DIR)/lib/$(COMP_LIB); \
+    fi
+
     @echo "========================================================================="
     @echo ""
 endef

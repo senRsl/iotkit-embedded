@@ -24,7 +24,7 @@
 extern "C" {
 #endif
 
-#include <stdbool.h>
+#include <stdint.h>
 
 typedef enum _IOT_LogLevel {
     IOT_LOG_EMERG = 0,

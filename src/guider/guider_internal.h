@@ -19,10 +19,7 @@
 
 #ifndef __GUIDER_INTERNAL_H__
 #define __GUIDER_INTERNAL_H__
-#define _GNU_SOURCE
-#if defined(_PLATFORM_IS_LINUX_)
-#include <assert.h>
-#endif
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -46,7 +43,7 @@
 #define CONN_SECMODE_LEN            (32)
 
 #define GUIDER_SIGN_LEN             (256)
-#define GUIDER_PID_LEN              (64)
+
 #define GUIDER_TS_LEN               (16)
 #define GUIDER_URL_LEN              (256)
 
@@ -76,9 +73,11 @@ extern const char *secmode_str[];
 
 SECURE_MODE _secure_mode_num(void);
 void _ident_partner(char *buf, int len);
+void _ident_module(char *buf, int len);
 int _fill_conn_string(char *dst, int len, const char *fmt, ...);
 void guider_print_dev_guider_info(iotx_device_info_pt dev,
                                   char *partner_id,
+                                  char *module_id,
                                   char *guider_url,
                                   int secure_mode,
                                   char *time_stamp,

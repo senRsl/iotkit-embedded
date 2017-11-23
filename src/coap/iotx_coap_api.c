@@ -24,8 +24,10 @@
 
 #include "lite-utils.h"
 #include "utils_hmac.h"
+#include "json_parser.h"
 #include "CoAPMessage.h"
 #include "CoAPExport.h"
+#include "report.h"
 
 #define IOTX_SIGN_LENGTH         (40+1)
 #define IOTX_SIGN_SOURCE_LEN     (256)
@@ -122,7 +124,7 @@ static void iotx_device_name_auth_callback(void *user, void *p_message)
         case COAP_MSG_CODE_205_CONTENT: {
             ret_code = iotx_get_token_from_json((char *)message->payload, p_iotx_coap->p_auth_token, p_iotx_coap->auth_token_len);
             if (IOTX_SUCCESS == ret_code) {
-                p_iotx_coap->is_authed = true;
+                p_iotx_coap->is_authed = IOT_TRUE;
                 COAP_INFO("CoAP authenticate success!!!");
             }
             break;
@@ -164,7 +166,7 @@ void iotx_event_notifyer(unsigned int code, CoAPMessage *message)
             iotx_coap_t *p_context = NULL;
             if (NULL != message->user) {
                 p_context = (iotx_coap_t *)message->user;
-                p_context->is_authed = false;
+                p_context->is_authed = IOT_FALSE;
                 IOT_CoAP_DeviceNameAuth(p_context);
                 COAP_INFO("IoTx token expired, will reauthenticate");
             }
@@ -217,6 +219,114 @@ int iotx_get_well_known(iotx_coap_context_t *p_context)
     CoAPMessage_send(p_coap_ctx, &message);
     CoAPMessage_destory(&message);
     return IOTX_SUCCESS;
+}
+
+static void iotx_coap_mid_rsphdl(void *arg, void *p_response)
+{
+    int                     p_payload_len = 0;
+    unsigned char          *p_payload = NULL;
+    char                   *msg = NULL;
+    iotx_coap_resp_code_t   resp_code;
+
+    IOT_CoAP_GetMessageCode(p_response, &resp_code);
+    IOT_CoAP_GetMessagePayload(p_response, &p_payload, &p_payload_len);
+    log_debug("MID Report: CoAP response code = %d", resp_code);
+    log_debug("MID Report: CoAP msg_len = %d", p_payload_len);
+    if (p_payload_len > 0) {
+        log_debug("MID Report: CoAP msg = '%s'", p_payload);
+        msg = json_get_value_by_name((char *)p_payload, p_payload_len, "id", &p_payload_len, 0);
+        if (NULL != msg) {
+            log_debug("MID Report: CoAP mid_report responseID = '%s'", msg);
+        } else {
+            log_warning("MID Report: CoAP mid_report responseID not found in msg");
+        }
+    } else {
+        log_warning("MID Report: CoAP response payload_len = 0");
+    }
+}
+
+/* report ModuleID */
+static int iotx_coap_report_mid(iotx_coap_context_t *p_context)
+{
+    int                     ret;
+    char                    topic_name[IOTX_URI_MAX_LEN + 1];
+    iotx_message_t          message;
+    char                    requestId[MIDREPORT_REQID_LEN + 1] = {0};
+    iotx_coap_t            *p_iotx_coap = (iotx_coap_t *)p_context;
+    char                    pid[PID_STRLEN_MAX + 1] = {0};
+    char                    mid[MID_STRLEN_MAX + 1] = {0};
+    CoAPContext            *p_coap_ctx = NULL;
+
+    memset(pid, 0, sizeof(pid));
+    memset(mid, 0, sizeof(mid));
+
+    if (0 == HAL_GetPartnerID(pid)) {
+        log_debug("PartnerID is Null");
+        return SUCCESS_RETURN;
+    }
+    if (0 == HAL_GetModuleID(mid)) {
+        log_debug("ModuleID is Null");
+        return SUCCESS_RETURN;
+    }
+    if (NULL == p_iotx_coap) {
+        log_err("Invalid param: p_context is NULL");
+        return FAIL_RETURN;
+    }
+
+    log_debug("MID Report: started in CoAP");
+    p_coap_ctx = (CoAPContext *)p_iotx_coap->p_coap_ctx;
+
+    iotx_midreport_reqid(requestId,
+                         p_iotx_coap->p_devinfo->product_key,
+                         p_iotx_coap->p_devinfo->device_name);
+    /* 1,generate json data */
+    char *msg = HAL_Malloc(MIDREPORT_PAYLOAD_LEN);
+    if (NULL == msg) {
+        log_err("allocate mem failed");
+        return FAIL_RETURN;
+    }
+
+    iotx_midreport_payload(msg,
+                           requestId,
+                           mid,
+                           pid);
+
+    log_debug("MID Report: json data = '%s'", msg);
+
+    memset(&message, 0, sizeof(iotx_message_t));
+
+    message.p_payload = (unsigned char *)msg;
+    message.payload_len = (unsigned short)strlen(msg);
+    message.resp_callback = iotx_coap_mid_rsphdl;
+    message.msg_type = IOTX_MESSAGE_NON;
+    message.content_type = IOTX_CONTENT_TYPE_JSON;
+
+    /* 2,generate topic name */
+    ret = iotx_midreport_topic(topic_name,
+                               "/topic",
+                               p_iotx_coap->p_devinfo->product_key,
+                               p_iotx_coap->p_devinfo->device_name);
+
+    log_debug("MID Report: topic name = '%s'", topic_name);
+
+    if (ret < 0) {
+        log_err("generate topic name of info failed");
+        HAL_Free(msg);
+        return FAIL_RETURN;
+    }
+
+    if (IOTX_SUCCESS != (ret = IOT_CoAP_SendMessage(p_context, topic_name, &message))) {
+        log_err("send CoAP msg failed, ret = %d", ret);
+        HAL_Free(msg);
+        return FAIL_RETURN;
+    }
+    HAL_Free(msg);
+    log_debug("MID Report: IOT_CoAP_SendMessage() = %d", ret);
+
+    ret = CoAPMessage_recv(p_coap_ctx, CONFIG_COAP_AUTH_TIMEOUT, 1);
+    log_debug("MID Report: finished, ret = CoAPMessage_recv() = %d", ret);
+
+    return SUCCESS_RETURN;
 }
 
 int IOT_CoAP_DeviceNameAuth(iotx_coap_context_t *p_context)
@@ -277,10 +387,17 @@ int IOT_CoAP_DeviceNameAuth(iotx_coap_context_t *p_context)
         return IOTX_ERR_SEND_MSG_FAILED;
     }
 
-    ret = CoAPMessage_recv(p_coap_ctx, 10000, 2);
+    ret = CoAPMessage_recv(p_coap_ctx, CONFIG_COAP_AUTH_TIMEOUT, 2);
     if (0 < ret && !p_iotx_coap->is_authed) {
         COAP_INFO("CoAP authenticate failed");
         return IOTX_ERR_AUTH_FAILED;
+    }
+
+    /* report module id */
+    ret = iotx_coap_report_mid(p_context);
+    if (SUCCESS_RETURN != ret) {
+        COAP_DEBUG("Send ModuleId message to server(CoAP) failed ret = %d", ret);
+        return IOTX_ERR_SEND_MSG_FAILED;
     }
 
     return IOTX_SUCCESS;
@@ -317,7 +434,7 @@ static int iotx_split_path_2_option(char *uri, CoAPMessage *message)
         if ('\0' == *(ptr + 1) && '\0' != *pstr) {
             memset(path, 0x00, sizeof(path));
             strncpy(path, pstr, sizeof(path) - 1);
-            COAP_DEBUG("path: %s,len = %d", path, (int)strlen(path));
+            COAP_DEBUG("path: %s,len=%d", path, (int)strlen(path));
             CoAPStrOption_add(message, COAP_OPTION_URI_PATH,
                               (unsigned char *)path, (int)strlen(path));
         }
@@ -456,7 +573,7 @@ iotx_coap_context_t *IOT_CoAP_Init(iotx_coap_config_t *p_config)
     memset(p_iotx_coap->p_auth_token, 0x00, IOTX_AUTH_TOKEN_LEN);
 
     /*Set the client isn't authed*/
-    p_iotx_coap->is_authed = false;
+    p_iotx_coap->is_authed = IOT_FALSE;
     p_iotx_coap->auth_token_len = IOTX_AUTH_TOKEN_LEN;
 
     /*Get deivce information*/
@@ -517,7 +634,7 @@ err:
         }
 
         p_iotx_coap->auth_token_len = 0;
-        p_iotx_coap->is_authed = false;
+        p_iotx_coap->is_authed = IOT_FALSE;
         coap_free(p_iotx_coap);
     }
     return NULL;
@@ -529,7 +646,7 @@ void IOT_CoAP_Deinit(iotx_coap_context_t **pp_context)
 
     if (NULL != pp_context && NULL != *pp_context) {
         p_iotx_coap = (iotx_coap_t *)*pp_context;
-        p_iotx_coap->is_authed = false;
+        p_iotx_coap->is_authed = IOT_FALSE;
         p_iotx_coap->auth_token_len = 0;
         p_iotx_coap->coap_token = IOTX_COAP_INIT_TOKEN;
 

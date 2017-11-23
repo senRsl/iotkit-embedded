@@ -29,16 +29,16 @@
 #include "utils_list.h"
 #include "utils_timer.h"
 #include "sdk-impl_internal.h"
+#include "report.h"
 
 #include "MQTTPacket/MQTTPacket.h"
 #include "mqtt_client.h"
 #ifdef MQTT_ID2_AUTH
-#include "id2_guider.h"
-#ifdef MQTT_ID2_CRYPTO
-#include "id2_crypto.h"
+    #include "id2_guider.h"
+    #ifdef MQTT_ID2_CRYPTO
+        #include "id2_crypto.h"
+    #endif
 #endif
-#endif
-
 
 static int iotx_mc_send_packet(iotx_mc_client_t *c, char *buf, int length, iotx_time_t *timer);
 static iotx_mc_state_t iotx_mc_get_client_state(iotx_mc_client_t *pClient);
@@ -981,6 +981,10 @@ static int iotx_mc_handle_recv_SUBACK(iotx_mc_client_t *c)
         return MQTT_SUBSCRIBE_ACK_PACKET_ERROR;
     }
 
+    iotx_mc_topic_handle_t messagehandler;
+    memset(&messagehandler, 0, sizeof(iotx_mc_topic_handle_t));
+    (void)iotx_mc_mask_subInfo_from(c, mypacketid, &messagehandler);
+
     /* In negative case, grantedQoS will be 0xFFFF FF80, which means -128 */
     if ((uint8_t)grantedQoS == 0x80) {
         iotx_mqtt_event_msg_t msg;
@@ -993,10 +997,6 @@ static int iotx_mc_handle_recv_SUBACK(iotx_mc_client_t *c)
 
         return MQTT_SUBSCRIBE_ACK_FAILURE;
     }
-
-    iotx_mc_topic_handle_t messagehandler;
-    memset(&messagehandler, 0, sizeof(iotx_mc_topic_handle_t));
-    (void)iotx_mc_mask_subInfo_from(c, mypacketid, &messagehandler);
 
     if ((NULL == messagehandler.handle.h_fp) || (NULL == messagehandler.topic_filter)) {
         return MQTT_SUB_INFO_NOT_FOUND_ERROR;
@@ -1081,16 +1081,20 @@ static int iotx_mc_handle_recv_PUBLISH(iotx_mc_client_t *c)
         c->mqtt_down_process(&topic_msg);
     }
 
-    char       *tmp_topic_name = NULL;
-
-    tmp_topic_name = LITE_malloc(topicName.lenstring.len + 1);
-    memset(tmp_topic_name, 0, topicName.lenstring.len + 1);
-    memcpy(tmp_topic_name, topicName.lenstring.data, topicName.lenstring.len);
-    log_debug("msg.id = | %d |", topic_msg.packet_id);
-    log_debug("topicName = | %s |", tmp_topic_name);
-    LITE_free(tmp_topic_name);
+    log_debug("%20s : %08d", "Packet Ident", topic_msg.packet_id);
+    log_debug("%20s : %d", "Topic Length", topicName.lenstring.len);
+    log_debug("%20s : %.*s",
+              "Topic Name",
+              topicName.lenstring.len,
+              topicName.lenstring.data);
+    log_debug("%20s : %d / %d", "Payload Len/Room",
+              topic_msg.payload_len,
+              c->buf_read + c->buf_size_read - topic_msg.payload);
+    log_debug("%20s : %d", "Receive Buflen", c->buf_size_read);
 
 #if defined(INSPECT_MQTT_FLOW)
+    log_debug("%20s : %p", "Payload Buffer", topic_msg.payload);
+    log_debug("%20s : %p", "Receive Buffer", c->buf_read);
     HEXDUMP_DEBUG(topic_msg.payload, topic_msg.payload_len);
 #endif
 
@@ -1161,16 +1165,19 @@ static int iotx_mc_handle_recv_UNSUBACK(iotx_mc_client_t *c)
 /* wait CONNACK packet from remote MQTT broker */
 static int iotx_mc_wait_CONNACK(iotx_mc_client_t *c)
 {
-    unsigned int packetType = 0;
-    int rc = 0;
-    iotx_time_t timer;
+#define WAIT_CONNACK_MAX    (10)
+
+    unsigned char       wait_connack = 0;
+    unsigned int        packetType = 0;
+    int                 rc = 0;
+    iotx_time_t         timer;
 
     if (!c) {
         return FAIL_RETURN;
     }
 
     iotx_time_init(&timer);
-    utils_time_countdown_ms(&timer, c->connect_data.keepAliveInterval * 1000);
+    utils_time_countdown_ms(&timer, c->request_timeout_ms);
 
     do {
         /* read the socket, see what work is due */
@@ -1180,6 +1187,10 @@ static int iotx_mc_wait_CONNACK(iotx_mc_client_t *c)
             return MQTT_NETWORK_ERROR;
         }
 
+        if (++wait_connack > WAIT_CONNACK_MAX) {
+            log_err("wait connack exceeds maximum of %d", WAIT_CONNACK_MAX);
+            return MQTT_NETWORK_ERROR;
+        }
     } while (packetType != CONNACK);
 
     rc = iotx_mc_handle_recv_CONNACK(c);
@@ -1188,6 +1199,8 @@ static int iotx_mc_wait_CONNACK(iotx_mc_client_t *c)
     }
 
     return rc;
+
+#undef WAIT_CONNACK_MAX
 }
 
 
@@ -1207,6 +1220,12 @@ static int iotx_mc_cycle(iotx_mc_client_t *c, iotx_time_t *timer)
         return MQTT_STATE_ERROR;
     }
 
+    if (IOTX_MC_KEEPALIVE_PROBE_MAX < c->keepalive_probes) {
+        iotx_mc_set_client_state(c, IOTX_MC_STATE_DISCONNECTED);
+        c->keepalive_probes = 0;
+        log_debug("keepalive_probes more than %u, disconnected\n", IOTX_MC_KEEPALIVE_PROBE_MAX);
+    }
+
     /* read the socket, see what work is due */
     rc = iotx_mc_read_packet(c, timer, &packetType);
     if (rc != SUCCESS_RETURN) {
@@ -1220,12 +1239,10 @@ static int iotx_mc_cycle(iotx_mc_client_t *c, iotx_time_t *timer)
         return SUCCESS_RETURN;
     }
 
-    /* receive any data to renew ping_timer */
-    utils_time_countdown_ms(&c->next_ping_time, c->connect_data.keepAliveInterval * 1000);
-
     /* clear ping mark when any data received from MQTT broker */
     HAL_MutexLock(c->lock_generic);
     c->ping_mark = 0;
+    c->keepalive_probes = 0;
     HAL_MutexUnlock(c->lock_generic);
 
     switch (packetType) {
@@ -1426,6 +1443,10 @@ static int iotx_mc_publish(iotx_mc_client_t *c, const char *topicName, iotx_mqtt
         topic_msg->packet_id = msg_id;
     }
 
+    if (topic_msg->qos == IOTX_MQTT_QOS2) {
+        log_err("MQTTPublish return error,MQTT_QOS2 is now not supported.");
+        return MQTT_PUBLISH_QOS_ERROR;
+    }
     /* payload encrypt by id2_aes */
     if (c->mqtt_up_process) {
         rc = c->mqtt_up_process((char *)topicName, topic_msg);
@@ -1520,6 +1541,39 @@ static int iotx_mc_set_connect_params(iotx_mc_client_t *pClient, MQTTPacket_conn
     return SUCCESS_RETURN;
 }
 
+static int32_t iotx_mc_calc_seed(uint32_t *p_seed)
+{
+    char                   *device_secret;
+    iotx_device_info_pt     pdev = iotx_device_info_get();
+    uint32_t                seed = 0;
+
+    POINTER_SANITY_CHECK(p_seed, NULL_VALUE_ERROR);
+    POINTER_SANITY_CHECK(pdev, NULL_VALUE_ERROR);
+
+    device_secret = pdev->device_secret;
+    STRING_PTR_SANITY_CHECK(device_secret, NULL_VALUE_ERROR);
+
+    while ('\0' != *device_secret) {
+        seed += *device_secret;
+        device_secret++;
+    }
+    seed += (HAL_UptimeMs() / 1000);
+    seed %= UINT32_MAX;
+    *p_seed = seed;
+    return SUCCESS_RETURN;
+}
+
+static int32_t iotx_mc_calc_random_init()
+{
+    uint32_t                seed;
+
+    if (SUCCESS_RETURN != iotx_mc_calc_seed(&seed)) {
+        return FAIL_RETURN;
+    }
+
+    HAL_Srandom(seed);
+    return SUCCESS_RETURN;
+}
 
 /* Initialize MQTT client */
 static int iotx_mc_init(iotx_mc_client_t *pClient, iotx_mqtt_param_t *pInitParams)
@@ -1580,6 +1634,8 @@ static int iotx_mc_init(iotx_mc_client_t *pClient, iotx_mqtt_param_t *pInitParam
     pClient->buf_read = pInitParams->pread_buf;
     pClient->buf_size_read = pInitParams->read_buf_size;
 
+    pClient->keepalive_probes = 0;
+
     pClient->handle_event.h_fp = pInitParams->handle_event.h_fp;
     pClient->handle_event.pcontext = pInitParams->handle_event.pcontext;
 
@@ -1625,6 +1681,12 @@ static int iotx_mc_init(iotx_mc_client_t *pClient, iotx_mqtt_param_t *pInitParam
     pClient->ipstack->ca_crt = NULL;
     pClient->ipstack->ca_crt_len = 0;
 #endif
+    if (SUCCESS_RETURN != iotx_mc_calc_random_init()) {
+        log_err("iotx_mc_calc_random_init failed");
+        rc = FAIL_RETURN;
+        goto RETURN;
+    }
+
     mc_state = IOTX_MC_STATE_INITIALIZED;
     rc = SUCCESS_RETURN;
     log_info("MQTT init success!");
@@ -1967,7 +2029,7 @@ static int iotx_mc_attempt_reconnect(iotx_mc_client_t *pClient)
 
     int rc;
 
-    log_info("reconnect params:MQTTVersion =%d clientID =%s keepAliveInterval =%d username = %s",
+    log_info("reconnect params: MQTTVersion=%d, clientID=%s, keepAliveInterval=%d, username=%s",
              pClient->connect_data.MQTTVersion,
              pClient->connect_data.clientID.cstring,
              pClient->connect_data.keepAliveInterval,
@@ -1988,11 +2050,12 @@ static int iotx_mc_attempt_reconnect(iotx_mc_client_t *pClient)
 /* reconnect */
 static int iotx_mc_handle_reconnect(iotx_mc_client_t *pClient)
 {
+    int             rc = FAIL_RETURN;
+    uint32_t        interval_ms = 0;
 
     if (NULL == pClient) {
         return NULL_VALUE_ERROR;
     }
-
     if (!utils_time_is_expired(&(pClient->reconnect_param.reconnect_next_time))) {
         /* Timer has not expired. Not time to attempt reconnect yet. Return attempting reconnect */
         return FAIL_RETURN;
@@ -2000,19 +2063,18 @@ static int iotx_mc_handle_reconnect(iotx_mc_client_t *pClient)
 
     log_info("start reconnect");
     /* REDO AUTH before each reconnection */
-    if (0 != pClient->mqtt_auth()) {
-        log_err("redo authentication error!\n");
+    if (NULL != pClient->mqtt_auth && SUCCESS_RETURN != pClient->mqtt_auth()) {
+        log_err("redo authentication error!");
         return -1;
     }
 
-    int rc = FAIL_RETURN;
     rc = iotx_mc_attempt_reconnect(pClient);
     if (SUCCESS_RETURN == rc) {
         iotx_mc_set_client_state(pClient, IOTX_MC_STATE_CONNECTED);
         return SUCCESS_RETURN;
     } else {
-        /*if reconnect network failed, then increase currentReconnectWaitInterval,
-        ex: init currentReconnectWaitInterval=1s,  reconnect failed then 2s .4s. 8s*/
+        /* if reconnect network failed, then increase currentReconnectWaitInterval */
+        /* e.g. init currentReconnectWaitInterval=1s, reconnect failed, then 2s..4s..8s */
         if (IOTX_MC_RECONNECT_INTERVAL_MAX_MS > pClient->reconnect_param.reconnect_time_interval_ms) {
             pClient->reconnect_param.reconnect_time_interval_ms *= 2;
         } else {
@@ -2020,30 +2082,32 @@ static int iotx_mc_handle_reconnect(iotx_mc_client_t *pClient)
         }
     }
 
-    utils_time_countdown_ms(&(pClient->reconnect_param.reconnect_next_time),
-                            pClient->reconnect_param.reconnect_time_interval_ms);
+    interval_ms = pClient->reconnect_param.reconnect_time_interval_ms;
+    interval_ms += HAL_Random(pClient->reconnect_param.reconnect_time_interval_ms);
+    if (IOTX_MC_RECONNECT_INTERVAL_MAX_MS < interval_ms) {
+        interval_ms = IOTX_MC_RECONNECT_INTERVAL_MAX_MS;
+    }
+    utils_time_countdown_ms(&(pClient->reconnect_param.reconnect_next_time), interval_ms);
 
     log_err("mqtt reconnect failed rc = %d", rc);
 
     return rc;
 }
 
-
-/* disconnect */
 static int iotx_mc_disconnect(iotx_mc_client_t *pClient)
 {
+    int             rc = -1;
+
     if (NULL == pClient) {
         return NULL_VALUE_ERROR;
     }
 
-    if (!iotx_mc_check_state_normal(pClient)) {
-        return SUCCESS_RETURN;
+    if (iotx_mc_check_state_normal(pClient)) {
+        rc = MQTTDisconnect(pClient);
+        log_debug("rc = MQTTDisconnect() = %d", rc);
     }
 
-
-    (void)MQTTDisconnect(pClient);
-
-    /*close tcp/ip socket or free tls resources*/
+    /* close tcp/ip socket or free tls resources */
     pClient->ipstack->disconnect(pClient->ipstack);
 
     iotx_mc_set_client_state(pClient, IOTX_MC_STATE_INITIALIZED);
@@ -2051,8 +2115,6 @@ static int iotx_mc_disconnect(iotx_mc_client_t *pClient)
     log_info("mqtt disconnect!");
     return SUCCESS_RETURN;
 }
-
-
 
 static void iotx_mc_disconnect_callback(iotx_mc_client_t *pClient)
 {
@@ -2151,12 +2213,88 @@ static int iotx_mc_keepalive_sub(iotx_mc_client_t *pClient)
 
     HAL_MutexLock(pClient->lock_generic);
     pClient->ping_mark = 1;
+    pClient->keepalive_probes++;
     HAL_MutexUnlock(pClient->lock_generic);
 
     return SUCCESS_RETURN;
 }
 
+/* report ModuleID */
+static int iotx_mc_report_mid(iotx_mc_client_t *pclient)
+{
+    int                         ret;
+    char                        topic_name[IOTX_URI_MAX_LEN + 1];
+    iotx_mqtt_topic_info_t      topic_info;
+    char                        requestId[MIDREPORT_REQID_LEN + 1] = {0};
+    iotx_device_info_pt         dev  = iotx_device_info_get();
+    char                        pid[PID_STRLEN_MAX + 1] = {0};
+    char                        mid[MID_STRLEN_MAX + 1] = {0};
 
+    memset(pid, 0, sizeof(pid));
+    memset(mid, 0, sizeof(mid));
+
+    if (0 == HAL_GetPartnerID(pid)) {
+        log_debug("PartnerID is Null");
+        return SUCCESS_RETURN;
+    }
+    if (0 == HAL_GetModuleID(mid)) {
+        log_debug("ModuleID is Null");
+        return SUCCESS_RETURN;
+    }
+
+    log_debug("MID Report: started in MQTT");
+
+    iotx_midreport_reqid(requestId,
+                         dev->product_key,
+                         dev->device_name);
+    /* 1,generate json data */
+    char *msg = HAL_Malloc(MIDREPORT_PAYLOAD_LEN);
+    if (NULL == msg) {
+        log_err("allocate mem failed");
+        return FAIL_RETURN;
+    }
+
+    iotx_midreport_payload(msg,
+                           requestId,
+                           mid,
+                           pid);
+
+    log_debug("MID Report: json data = '%s'", msg);
+
+    memset(&topic_info, 0, sizeof(iotx_mqtt_topic_info_t));
+
+    topic_info.qos = IOTX_MQTT_QOS0;
+    topic_info.payload = (void *)msg;
+    topic_info.payload_len = strlen(msg);
+    topic_info.retain = 0;
+    topic_info.dup = 0;
+
+    /* 2,generate topic name */
+    ret = iotx_midreport_topic(topic_name,
+                               "",
+                               dev->product_key,
+                               dev->device_name);
+
+    log_debug("MID Report: topic name = '%s'", topic_name);
+
+    if (ret < 0) {
+        log_err("generate topic name of info failed");
+        HAL_Free(msg);
+        return FAIL_RETURN;
+    }
+
+    ret = IOT_MQTT_Publish(pclient, topic_name, &topic_info);
+    if (ret < 0) {
+        log_err("publish failed");
+        HAL_Free(msg);
+        return FAIL_RETURN;
+    }
+
+    HAL_Free(msg);
+
+    log_debug("MID Report: finished, IOT_MQTT_Publish() = %d", ret);
+    return SUCCESS_RETURN;
+}
 
 /************************  Public Interface ************************/
 void *IOT_MQTT_Construct(iotx_mqtt_param_t *pInitParams)
@@ -2192,6 +2330,14 @@ void *IOT_MQTT_Construct(iotx_mqtt_param_t *pInitParams)
         return NULL;
     }
     pclient->mqtt_auth = iotx_guider_authenticate;
+
+    /* report module id */
+    err = iotx_mc_report_mid(pclient);
+    if (SUCCESS_RETURN != err) {
+        iotx_mc_release(pclient);
+        LITE_free(pclient);
+        return NULL;
+    }
 
     return pclient;
 }

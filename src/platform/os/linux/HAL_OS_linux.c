@@ -22,7 +22,6 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <memory.h>
-
 #include <pthread.h>
 #include <unistd.h>
 #include <sys/prctl.h>
@@ -83,14 +82,13 @@ void HAL_Free(_IN_ void *ptr)
     free(ptr);
 }
 
-uint32_t HAL_UptimeMs(void)
+uint64_t HAL_UptimeMs(void)
 {
-    struct timeval tv = { 0 };
-    uint32_t time_ms;
+    uint64_t            time_ms;
+    struct timespec     ts;
 
-    gettimeofday(&tv, NULL);
-
-    time_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    time_ms = (ts.tv_sec * 1000) + (ts.tv_nsec / 1000 / 1000);
 
     return time_ms;
 }
@@ -98,6 +96,16 @@ uint32_t HAL_UptimeMs(void)
 void HAL_SleepMs(_IN_ uint32_t ms)
 {
     usleep(1000 * ms);
+}
+
+void HAL_Srandom(uint32_t seed)
+{
+    srandom(seed);
+}
+
+uint32_t HAL_Random(uint32_t region)
+{
+    return (region > 0) ? (random() % region) : 0;
 }
 
 int HAL_Snprintf(_IN_ char *str, const int len, const char *fmt, ...)
@@ -112,6 +120,11 @@ int HAL_Snprintf(_IN_ char *str, const int len, const char *fmt, ...)
     return rc;
 }
 
+int HAL_Vsnprintf(_IN_ char *str, _IN_ const int len, _IN_ const char *format, va_list ap)
+{
+    return vsnprintf(str, len, format, ap);
+}
+
 void HAL_Printf(_IN_ const char *fmt, ...)
 {
     va_list args;
@@ -123,7 +136,21 @@ void HAL_Printf(_IN_ const char *fmt, ...)
     fflush(stdout);
 }
 
-char *HAL_GetPartnerID(char pid_str[])
+int HAL_GetPartnerID(char pid_str[PID_STRLEN_MAX])
 {
-    return NULL;
+    memset(pid_str, 0x0, PID_STRLEN_MAX);
+#ifdef __UBUNTU_SDK_DEMO__
+    strcpy(pid_str, "example.demo.partner-id");
+#endif
+    return strlen(pid_str);
 }
+
+int HAL_GetModuleID(char mid_str[MID_STRLEN_MAX])
+{
+    memset(mid_str, 0x0, MID_STRLEN_MAX);
+#ifdef __UBUNTU_SDK_DEMO__
+    strcpy(mid_str, "example.demo.module-id");
+#endif
+    return strlen(mid_str);
+}
+

@@ -25,16 +25,26 @@ extern "C" {
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <stdbool.h>
+#include <stdarg.h>
 #include <inttypes.h>
+
+#include "imports/iot_import_config.h"
 
 /** @defgroup group_platform platform
  *  @{
  */
 
-#define _IN_            /**< indicate that this is an input parameter. */
-#define _OU_            /**< indicate that this is an output parameter. */
+#define _IN_                /* indicate that this is an input parameter */
+#define _OU_                /* indicate that this is an output parameter */
+#define IOT_TRUE    (1)     /* indicate boolean value true */
+#define IOT_FALSE   (0)     /* indicate boolean value false */
 
+#define PID_STRLEN_MAX      (64)
+#define MID_STRLEN_MAX      (64)
+
+#ifdef SIM7000C_DAM
+#include "qapi_ali_iot.h"
+#else
 
 /*********************************** mutex interface ***********************************/
 
@@ -50,8 +60,6 @@ extern "C" {
  * @note None.
  */
 void *HAL_MutexCreate(void);
-
-
 
 /**
  * @brief Destroy the specified mutex object, it will release related resource.
@@ -131,11 +139,11 @@ void HAL_Free(_IN_ void *ptr);
  * @see None.
  * @note None.
  */
-uint32_t HAL_UptimeMs(void);
+uint64_t HAL_UptimeMs(void);
 
 
 /**
- * @brief sleep thread itself.
+ * @brief Sleep thread itself.
  *
  * @param [in] ms @n the time interval for which execution is to be suspended, in milliseconds.
  * @return None.
@@ -144,6 +152,25 @@ uint32_t HAL_UptimeMs(void);
  */
 void HAL_SleepMs(_IN_ uint32_t ms);
 
+/**
+ * @brief Set seed for a sequence of pseudo-random integers, which will be returned by HAL_Random()
+ *
+ * @param [in] seed @n A start point for the random number sequence
+ * @return None.
+ * @see None.
+ * @note None.
+ */
+void HAL_Srandom(uint32_t seed);
+
+/**
+ * @brief Get a random integer
+ *
+ * @param [in] region @n Range of generated random numbers
+ * @return Random number
+ * @see None.
+ * @note None.
+ */
+uint32_t HAL_Random(uint32_t region);
 
 /**
  * @brief Writes formatted data to stream.
@@ -172,12 +199,30 @@ void HAL_Printf(_IN_ const char *fmt, ...);
 int HAL_Snprintf(_IN_ char *str, const int len, const char *fmt, ...);
 
 /**
+ * @brief Writes formatted data to string.
+ *
+ * @param [in] str: @n String that holds written text.
+ * @param [in] len: @n Maximum length of character will be written
+ * @param [in] fmt: @n Format that contains the text to be written
+ * @param [in] ap:  @n the variable argument list
+ * @see None.
+ * @note None.
+ */
+int HAL_Vsnprintf(_IN_ char *str, _IN_ const int len, _IN_ const char *fmt, va_list ap);
+
+/**
  * @brief Get vendor ID of hardware module.
  *
- * @return NULL, Have NOT PID; NOT NULL, point to pid_str.
+ * @return the strlen of pid_str[] successfully written into.
  */
-char *HAL_GetPartnerID(char pid_str[]);
+int HAL_GetPartnerID(char pid_str[PID_STRLEN_MAX]);
 
+/**
+ * @brief Get Module ID of hardware module.
+ *
+ * @return the strlen of mid_str[] successfully written into.
+ */
+int HAL_GetModuleID(char mid_str[MID_STRLEN_MAX]);
 
 /** @} */ /* end of group_platform_other */
 
@@ -306,6 +351,24 @@ int32_t HAL_SSL_Write(uintptr_t handle, const char *buf, int len, int timeout_ms
  */
 int32_t HAL_SSL_Read(uintptr_t handle, char *buf, int len, int timeout_ms);
 
+void *HAL_UDP_create(char *host, unsigned short port);
+void HAL_UDP_close(void *p_socket);
+int HAL_UDP_write(
+            void *p_socket,
+            const unsigned char *p_data,
+            unsigned int datalen);
+int HAL_UDP_read(
+            void *p_socket,
+            unsigned char *p_data,
+            unsigned int datalen);
+int HAL_UDP_readTimeout(
+            void *p_socket,
+            unsigned char *p_data,
+            unsigned int datalen,
+            unsigned int timeout);
+
+
+#endif  /* SIM7000C_DAM */
 
 #if defined(__cplusplus)
 }

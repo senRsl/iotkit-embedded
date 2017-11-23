@@ -21,7 +21,7 @@
 #include "tfs.h"
 
 #ifndef MQTT_DIRECT
-static bool _is_non_symbol(char c)
+static int _is_non_symbol(char c)
 {
     int         c_int = (int)c;
 
@@ -170,7 +170,7 @@ static void id2_guider_get_url(char *buf, int len)
     strcat(buf, "iot-auth-pre.cn-shanghai.aliyuncs.com");
 #elif defined(TEST_ID2_PRE)
     strcat(buf, "iot-auth-pre.cn-shanghai.aliyuncs.com");
-#elif defined(TEST_OTA_DAILY)
+#elif defined(TEST_MQTT_DAILY)
     strcat(buf, "iot-auth.alibaba.net");
 #else
     strcat(buf, "iot-auth.cn-shanghai.aliyuncs.com");
@@ -285,10 +285,6 @@ static int id2_guider_get_iotId_iotToken(
     iotx_port = 80;
 #endif
 
-#if defined(TEST_OTA_DAILY)
-    iotx_port = 80;
-#endif
-
 #if defined(TEST_ID2_PRE)
     iotx_port = 80;
 #endif
@@ -315,8 +311,6 @@ static int id2_guider_get_iotId_iotToken(
                    guider_addr,
                    iotx_port,
 #if defined(TEST_OTA_PRE)
-                   NULL
-#elif defined(TEST_OTA_DAILY)
                    NULL
 #elif defined(TEST_ID2_PRE)
                    NULL
@@ -480,7 +474,8 @@ do_exit:
 
 int iotx_guider_id2_authenticate(void)
 {
-    char                partner_id[GUIDER_PID_LEN + 16] = {0};
+    char                partner_id[PID_STRLEN_MAX + 16] = {0};
+    char                module_id[MID_STRLEN_MAX + 16] = {0};
     char                guider_url[GUIDER_URL_LEN] = {0};
     SECURE_MODE         secure_mode = MODE_TLS_GUIDER;
     char                guider_sign[GUIDER_SIGN_LEN] = {0};
@@ -497,6 +492,7 @@ int iotx_guider_id2_authenticate(void)
 
     id2_guider_get_timestamp_str(time_stamp_str, sizeof(time_stamp_str));
     _ident_partner(partner_id, sizeof(partner_id));
+    _ident_module(module_id, sizeof(module_id));
     id2_guider_get_url(guider_url, sizeof(guider_url));
     secure_mode = id2_guider_get_secure_mode();
 
@@ -507,7 +503,7 @@ int iotx_guider_id2_authenticate(void)
                         &id2,
                         &device_code);
 
-    guider_print_dev_guider_info(dev, partner_id, guider_url, secure_mode,
+    guider_print_dev_guider_info(dev, partner_id, module_id, guider_url, secure_mode,
                                  time_stamp_str, guider_sign,
                                  id2, device_code);
 

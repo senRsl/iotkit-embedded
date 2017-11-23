@@ -1,8 +1,13 @@
 DEPENDS             := src/platform
 LDFLAGS             := -liot_sdk
 LDFLAGS             += -liot_platform
-LDFLAGS             += -lmbedtls -lmbedx509 -lmbedcrypto
+LDFLAGS             += -Bstatic -liot_tls
 CFLAGS              := $(filter-out -ansi,$(CFLAGS))
+
+ifneq (,$(filter -D_PLATFORM_IS_WINDOWS_,$(CFLAGS)))
+LDFLAGS             += -lws2_32
+CFLAGS              := $(filter-out -DCOAP_COMM_ENABLED,$(CFLAGS))
+endif
 
 ifneq (,$(filter -DMQTT_COMM_ENABLED,$(CFLAGS)))
 TARGET              += mqtt-example mqtt_rrpc-example
@@ -16,7 +21,7 @@ SRCS_mqtt_rrpc-example := mqtt/mqtt_rrpc-example.c
     endif
     endif
 
-    ifneq (,$(filter -DMQTT_DEVICE_SHADOW,$(CFLAGS)))
+    ifneq (,$(filter -DMQTT_SHADOW,$(CFLAGS)))
     TARGET              += shadow-example
     SRCS_shadow-example := device-shadow/shadow-example.c
     endif
@@ -27,7 +32,7 @@ SRCS_mqtt_rrpc-example := mqtt/mqtt_rrpc-example.c
     else
     LDFLAGS     += -ltfs_online
     endif
-    LDFLAGS     += -lmbedcrypto
+    LDFLAGS     += -liot_tls
     endif
 
 endif

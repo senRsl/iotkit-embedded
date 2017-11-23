@@ -1,14 +1,8 @@
 include $(CURDIR)/src/scripts/internal_make_funcs.mk
 
-SETTING_VARS := \
-    BUILD_TYPE \
-    PLATFORM_CC \
-    PLATFORM_AR \
-    PLATFORM_OS \
-
 SWITCH_VARS := \
     FEATURE_MQTT_COMM_ENABLED \
-    FEATURE_MQTT_DEVICE_SHADOW \
+    FEATURE_MQTT_SHADOW \
     FEATURE_MQTT_DIRECT \
     FEATURE_MQTT_DIRECT_NOTLS \
     FEATURE_COAP_COMM_ENABLED \
@@ -22,18 +16,12 @@ SWITCH_VARS := \
     FEATURE_HTTP_COMM_ENABLED \
 
 $(foreach v, \
-    $(SETTING_VARS) $(SWITCH_VARS), \
-    $(eval export $(v)=$($(v))) \
-)
-
-$(foreach v, \
     $(SWITCH_VARS), \
     $(if $(filter y,$($(v))), \
         $(eval CFLAGS += -D$(subst FEATURE_,,$(v)))) \
 )
 
 ifeq (y,$(strip $(FEATURE_OTA_ENABLED)))
-
 ifeq (MQTT,$(strip $(FEATURE_OTA_SIGNAL_CHANNEL)))
 ifneq (y,$(strip $(FEATURE_MQTT_COMM_ENABLED)))
 $(error FEATURE_OTA_SIGNAL_CHANNEL = MQTT requires FEATURE_MQTT_COMM_ENABLED = y!)
@@ -53,18 +41,14 @@ $(error FEATURE_OTA_SIGNAL_CHANNEL must be MQTT or COAP or HTTP!)
 endif # HTTP
 endif # COAP
 endif # MQTT
-
 endif # OTA Enabled
-
-ifneq (HTTP,$(strip $(FEATURE_OTA_FETCH_CHANNEL)))
-$(error FEATURE_OTA_FETCH_CHANNEL must be HTTP!)
-endif
 
 include build-rules/settings.mk
 sinclude $(CONFIG_TPL)
 
-ifeq (debug,$(strip $(BUILD_TYPE)))
-CFLAGS  += -DIOTX_DEBUG
+ifeq (,$(filter reconfig distclean,$(MAKECMDGOALS)))
+ifneq (HTTP,$(strip $(FEATURE_OTA_FETCH_CHANNEL)))
+$(error FEATURE_OTA_FETCH_CHANNEL must be HTTP!)
 endif
 
 ifneq (y,$(strip $(FEATURE_MQTT_COMM_ENABLED)))
@@ -73,7 +57,7 @@ ifneq (y,$(strip $(FEATURE_MQTT_COMM_ENABLED)))
     $(error Either CoAP or MQTT required to be y!)
     endif
 
-$(foreach V,DEVICE_SHADOW DIRECT DIRECT_NOTLS, \
+$(foreach V,SHADOW DIRECT DIRECT_NOTLS, \
     $(if $(filter y,$(strip $(FEATURE_MQTT_$(V)))), \
         $(error FEATURE_MQTT_$(V) = y requires FEATURE_MQTT_COMM_ENABLED = y!) \
     ) \
@@ -100,8 +84,8 @@ endif   # ifeq (y,$(strip $(FEATURE_MQTT_DIRECT)))
 
 ifeq (y,$(strip $(FEATURE_MQTT_ID2_AUTH)))
 
-    ifneq (gcc,$(strip $(PLATFORM_CC)))
-    $(error FEATURE_MQTT_ID2_AUTH requires PLATFORM_CC equal gcc!)
+    ifneq (gcc,$(strip $(CC)))
+    $(error FEATURE_MQTT_ID2_AUTH requires $(CC) equal gcc!)
     endif
 
 else    # ifeq (y,$(strip $(FEATURE_MQTT_ID2_AUTH)))
@@ -128,7 +112,9 @@ ifeq (daily,$(strip $(FEATURE_MQTT_ID2_ENV)))
 CFLAGS  += -DTEST_ID2_DAILY
 endif
 endif
+endif
 
-OVERRIDE_CC := $(strip $(PLATFORM_CC))
-OVERRIDE_AR := $(strip $(PLATFORM_AR))
-OVERRIDE_STRIP := $(strip $(PLATFORM_STRIP))
+SUBDIRS += src/tls
+SUBDIRS += src/platform
+SUBDIRS += sample
+SUBDIRS += src/sdk-tests
